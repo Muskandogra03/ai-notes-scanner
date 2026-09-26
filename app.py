@@ -1,89 +1,52 @@
-import io
 import streamlit as st
+import cv2
+import numpy as np
 from PIL import Image
-from pdf2image import convert_from_bytes
-from ocr_scanner import scan_and_extract
+from ocr_scanner import process_document
 
-st.set_page_config(page_title="Document Scanner Module", page_icon="📑")
-
-st.title("📑 Smart Document Scanner Module")
-st.write("MCA Mini Project - Phase 1 Presentation")
-
-st.markdown("---")
-
-# 1. Input Source Selection
-input_mode = st.radio(
-    "Choose Input Source:",
-    ["📷 Live Mobile Camera", "📁 Upload Image or PDF"],
-    horizontal=True,
+st.set_page_config(
+    page_title="AI Notes Scanner & OCR",
+    page_icon="📄",
+    layout="wide"
 )
 
-image_to_process = None
+st.title("📄 AI Notes Document Scanner")
+st.write("Scan handwritten/printed notes, auto-crop edges, and extract text instantly!")
 
-# 2. Input Handling based on choice
-if input_mode == "📷 Live Mobile Camera":
-    camera_file = st.camera_input("Take a photo of your document")
-    if camera_file is not None:
-        image_to_process = camera_file
+st.sidebar.header("Scanner Settings")
+source = st.sidebar.radio("Select Input Source:", ("Take Photo (Camera)", "Upload Image"))
 
-elif input_mode == "📁 Upload Image or PDF":
-    uploaded_file = st.file_uploader(
-        "Upload Notes Image (JPG/PNG) or PDF Document",
-        type=["jpg", "jpeg", "png", "pdf"],
-    )
+image_file = None
 
-    if uploaded_file is not None:
-        # Check if uploaded file is PDF
-        if uploaded_file.name.lower().endswith(".pdf"):
-            st.info("Converting PDF Page 1 to Image for scanning...")
-            try:
-                # Convert first page of PDF to Image
-                pdf_images = convert_from_bytes(uploaded_file.read())
-                first_page = pdf_images[0]
+if source == "Take Photo (Camera)":
+    image_file = st.camera_input("Capture Document Page")
+else:
+    image_file = st.file_uploader("Upload Document Photo", type=["jpg", "png", "jpeg"])
 
-                # Convert PIL Image back to bytes for OpenCV scanner module
-                img_byte_arr = io.BytesIO()
-                first_page.save(img_byte_arr, format="JPEG")
-                image_to_process = img_byte_arr.getvalue()
+if image_file is not None:
+    st.info("⚡ Processing document using OpenCV Filters & Tesseract OCR...")
+    
+    outlined, scanned, text = process_document(image_file)
 
-            except Exception as e:
-                st.error(
-                    f"PDF Processing Error: {str(e)}. (Agar Poppler set nahi hai, toh JPG/PNG images use karein)"
-                )
-        else:
-            image_to_process = uploaded_file
+    if outlined is not None:
+        col1, col2 = st.columns(2)
 
-# 3. Display Image & Perform OCR Scanning
-if image_to_process is not None:
-    st.image(image_to_process, caption="Original Input Document", width=400)
+        with col1:
+            st.subheader("1. Edge Detection & Contour")
+            st.image(outlined, channels="BGR", use_container_width=True, caption="Detected Green Paper Boundary")
 
-    if st.button("🔍 Scan & Extract Text", type="primary"):
-        with st.spinner("Processing image through OpenCV & PyTesseract..."):
-            extracted_text, processed_img, error = scan_and_extract(
-                image_to_process
+        with col2:
+            st.subheader("2. CamScanner Magic Filter")
+            st.image(scanned, use_container_width=True, caption="Cropped, Straightened & Clean B&W Document")
+
+        st.subheader("3. Extracted Text Result (OCR)")
+        if text.strip():
+            st.text_area("Extracted Notes Text:", text, height=250)
+            st.download_button(
+                label="📥 Download Extracted Text",
+                data=text,
+                file_name="scanned_notes.txt",
+                mime="text/plain"
             )
-
-            if error:
-                st.error(f"Error: {error}")
-            else:
-                st.success("Scanning & OCR Completed Successfully!")
-
-                # Column layout for processed image and output text
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.subheader("OpenCV Processed Image")
-                    st.image(
-                        processed_img,
-                        caption="Thresholded Image for OCR",
-                        use_container_width=True,
-                    )
-
-                with col2:
-                    st.subheader("Extracted Text")
-                    st.text_area(
-                        "Result:",
-                        extracted_text,
-                        height=300,
-                        disabled=False,  # Set to False so users can copy/edit text
-                    )
+        else:
+            st.warning("No readable text found in the image. Please try capturing with better lighting.")
