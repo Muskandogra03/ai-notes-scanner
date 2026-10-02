@@ -2,6 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
+from streamlit_cropper import st_cropper
 from ocr_scanner import process_document
 
 st.set_page_config(
