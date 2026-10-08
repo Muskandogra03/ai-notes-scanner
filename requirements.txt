@@ -1,7 +1,6 @@
 streamlit
-pytesseract
 opencv-python-headless
-pillow
-pdf2image
 numpy
-streamlit-cropper
+pytesseract
+Pillow
+img2pdf
