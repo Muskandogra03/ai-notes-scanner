@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import pytesseract
+import re
 
 # Page Configuration
 st.set_page_config(page_title="AI Document Scanner", layout="wide")
@@ -10,18 +11,25 @@ st.set_page_config(page_title="AI Document Scanner", layout="wide")
 st.title("📚 AI Document Scanner & Image OCR Engine")
 st.markdown("Scan documents with real-time shadow removal and manual cropping, or extract text from uploaded images.")
 
-# Navigation Tabs - Only Active Working Modules
+# Navigation Tabs
 tab1, tab2 = st.tabs([
     "📷 Document Scanner", 
     "🖼️ Image Uploader"
 ])
 
-# Global session memory for extracted text
-if "extracted_text" not in st.session_state:
-    st.session_state["extracted_text"] = ""
+def clean_ocr_text(raw_text):
+    """Filters out noise and garbage characters from OCR output."""
+    lines = raw_text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        # Remove lines that contain mostly garbage or single random symbols
+        line_str = line.strip()
+        if len(line_str) > 2 or any(c.isalnum() for c in line_str):
+            cleaned_lines.append(line_str)
+    return "\n".join(cleaned_lines)
 
 # ---------------------------------------------------------
-# TAB 1: DOCUMENT SCANNER (WITH MANUAL CROPPING & SHADOW REMOVAL)
+# TAB 1: DOCUMENT SCANNER
 # ---------------------------------------------------------
 with tab1:
     st.header("📷 Document Scanner & Cropper")
@@ -45,20 +53,17 @@ with tab1:
             left_crop = st.slider("Crop Left (%)", 0, 40, 0, key="left")
             right_crop = st.slider("Crop Right (%)", 0, 40, 0, key="right")
             
-        # Calculate cropping boundaries
         top_px = int(height * (top_crop / 100))
         bottom_px = int(height * (1 - (bottom_crop / 100)))
         left_px = int(width * (left_crop / 100))
         right_px = int(width * (1 - (right_crop / 100)))
         
-        # Ensure valid crop boundaries
         if top_px < bottom_px and left_px < right_px:
             cropped_img = cv_img[top_px:bottom_px, left_px:right_px]
         else:
             cropped_img = cv_img
-            st.warning("Invalid crop range. Showing original frame.")
             
-        # Shadow Removal Algorithm (LAB Color Space)
+        # LAB Shadow Removal
         lab = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         dilated_l = cv2.dilate(l, np.ones((7, 7), np.uint8))
@@ -68,39 +73,57 @@ with tab1:
         updated_lab = cv2.merge((norm_img, a, b))
         scanned_img = cv2.cvtColor(updated_lab, cv2.COLOR_LAB2RGB)
         
-        # Display Results
         col_res1, col_res2 = st.columns(2)
         with col_res1:
             st.image(cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB), caption="Cropped Input Frame", use_container_width=True)
         with col_res2:
-            st.image(scanned_img, caption="Processed & Enhanced Output", use_container_width=True)
+            st.image(scanned_img, caption="Processed Output", use_container_width=True)
             
-        # OCR Text Extraction
-        if st.button("Perform OCR on Scanned Image"):
-            with st.spinner("Extracting text via PyTesseract OCR..."):
-                ocr_text = pytesseract.image_to_string(scanned_img)
-                st.session_state["extracted_text"] = ocr_text
-                st.subheader("📝 Extracted Text:")
-                st.text_area("OCR Output", ocr_text, height=200)
-                st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_document.txt")
+        # Image Pre-processing for Enhanced OCR
+        gray = cv2.cvtColor(scanned_img, cv2.COLOR_RGB2GRAY)
+        threshold_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        
+        # Automatic OCR Execution with Optimized Configuration
+        try:
+            custom_config = r'--oem 3 --psm 6'
+            raw_text = pytesseract.image_to_string(threshold_img, config=custom_config)
+            cleaned_text = clean_ocr_text(raw_text)
+            
+            st.subheader("📝 Extracted Text:")
+            if cleaned_text.strip():
+                st.text_area("OCR Result", cleaned_text, height=200)
+                st.download_button("Download Text (.txt)", data=cleaned_text, file_name="scanned_text.txt")
+            else:
+                st.warning("No clear printed text detected. Ensure proper lighting and printed font.")
+        except Exception as e:
+            st.error(f"OCR Processing Error: {e}")
 
 # ---------------------------------------------------------
 # TAB 2: IMAGE UPLOADER
 # ---------------------------------------------------------
 with tab2:
     st.header("🖼️ Upload Image File")
-    st.caption("Upload document images from your gallery to perform Optical Character Recognition.")
-    
     uploaded_image = st.file_uploader("Select an image file", type=["png", "jpg", "jpeg"])
     
     if uploaded_image:
         image = Image.open(uploaded_image)
         st.image(image, caption="Uploaded Document Image", width=400)
         
-        if st.button("Extract Text from Uploaded Image"):
-            with st.spinner("Extracting text via PyTesseract OCR..."):
-                ocr_text = pytesseract.image_to_string(image)
-                st.session_state["extracted_text"] = ocr_text
-                st.subheader("📝 Extracted Text:")
-                st.text_area("OCR Output", ocr_text, height=200)
-                st.download_button("Download Text File (.txt)", data=ocr_text, file_name="extracted_text.txt")
+        # Convert PIL Image to OpenCV format for pre-processing
+        open_cv_image = np.array(image.convert('RGB')) 
+        gray = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2GRAY)
+        threshold_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        
+        try:
+            custom_config = r'--oem 3 --psm 6'
+            raw_text = pytesseract.image_to_string(threshold_img, config=custom_config)
+            cleaned_text = clean_ocr_text(raw_text)
+            
+            st.subheader("📝 Extracted Text:")
+            if cleaned_text.strip():
+                st.text_area("OCR Result", cleaned_text, height=200)
+                st.download_button("Download Text (.txt)", data=cleaned_text, file_name="extracted_text.txt")
+            else:
+                st.warning("No readable text found in the image.")
+        except Exception as e:
+            st.error(f"OCR Engine Error: {e}")
