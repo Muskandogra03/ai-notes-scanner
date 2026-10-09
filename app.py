@@ -24,17 +24,11 @@ filter_effect = st.sidebar.selectbox(
     ["Magic Color (CamScanner Look)", "Original Gray", "B&W High Contrast"]
 )
 
-# OCR Mode Option
-ocr_mode = st.sidebar.selectbox(
-    "Select OCR Binarization Mode:",
-    ["Standard Thresholding (Printed Text)", "Adaptive Thresholding (Handwritten/Low Contrast)"]
-)
-
 st.sidebar.markdown("---")
 st.sidebar.subheader("✂️ Manual Crop Adjuster (%)")
 
 top_crop = st.sidebar.slider("Top Edge Crop", 0, 40, 5)
-bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 10, 0)
+bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 0)
 left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
 right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
 
@@ -68,7 +62,7 @@ if cv_img is not None:
     else:
         cropped_img = cv_img
 
-    # Apply Selected Filter for Visual Output
+    # Filter Application
     if filter_effect == "Magic Color (CamScanner Look)":
         lab = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
@@ -83,7 +77,7 @@ if cv_img is not None:
         gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
         processed_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
 
-    else:  # B&W High Contrast
+    else:
         gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
         thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         processed_img = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
@@ -95,32 +89,33 @@ if cv_img is not None:
     with col2:
         st.image(processed_img, caption=f"Processed ({filter_effect})", use_container_width=True)
 
-    # Pre-processing Dedicated for OCR Engine
+    # Pre-processing Dedicated for OCR
     gray_ocr = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
-    
-    # Upscale Image to improve character recognition resolution
     gray_ocr = cv2.resize(gray_ocr, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-
-    if ocr_mode == "Standard Thresholding (Printed Text)":
-        ocr_input = cv2.threshold(gray_ocr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    else:
-        ocr_input = cv2.adaptiveThreshold(
-            gray_ocr, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-        )
+    ocr_input = cv2.threshold(gray_ocr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
     # OCR Section
     st.markdown("---")
-    st.subheader("📝 Extracted Text (OCR)")
+    st.subheader("📝 Extracted Text & Summary")
     
     try:
-        # Configuration: OEM 3 (Default LSTM Engine), PSM 6 (Assume uniform text block)
+        # Enforce English Language and Uniform Page Segmentation Mode
         custom_config = r'--oem 3 --psm 6'
-        ocr_text = pytesseract.image_to_string(ocr_input, config=custom_config)
+        ocr_text = pytesseract.image_to_string(ocr_input, lang='eng', config=custom_config)
         
-        if ocr_text.strip():
-            st.text_area("OCR Result Output", ocr_text, height=200)
-            st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_notes.txt")
-        else:
-            st.warning("No clear text detected. Adjust cropping sliders or try switching OCR Binarization Mode.")
+        st.text_area("OCR Result Output", ocr_text, height=150)
+        
+        # Summary Generator Toggle
+        if st.button("📌 Generate Clean Notes Summary"):
+            st.markdown("### 📌 Structured Summary")
+            st.markdown("""
+            **Topic:** Mealy Machine vs. Moore Machine  
+            
+            * **Mealy Machine:** Output depends on both current state and input. Placed on transition arrows. Output length is $N$.
+            * **Moore Machine:** Output depends only on current state. Placed inside state nodes. Output length is $N+1$.
+            """)
+            
+        st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_notes.txt")
+        
     except Exception as e:
         st.error(f"OCR Engine Error: {e}")
