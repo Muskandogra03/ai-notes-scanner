@@ -1,6 +1,7 @@
 streamlit
 opencv-python-headless
 numpy
-pytesseract
 Pillow
-img2pdf
+pytesseract
+PyMuPDF
+youtube-transcript-api
