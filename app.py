@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import pytesseract
 
-# Page Config
+# Page Configuration
 st.set_page_config(page_title="AI Document Scanner & OCR", layout="wide")
 
 st.title("📚 AI Document Scanner & OCR Engine")
@@ -27,7 +27,7 @@ filter_effect = st.sidebar.selectbox(
 st.sidebar.markdown("---")
 st.sidebar.subheader("✂️ Manual Crop Adjuster (%)")
 
-top_crop = st.sidebar.slider("Top Edge Crop", 0, 40, 5)
+top_crop = st.sidebar.slider("Top Edge Crop", 0, 40, 0)
 bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 0)
 left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
 right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
@@ -89,33 +89,26 @@ if cv_img is not None:
     with col2:
         st.image(processed_img, caption=f"Processed ({filter_effect})", use_container_width=True)
 
-    # Pre-processing Dedicated for OCR
+    # Optimized Pre-processing Pipeline for Digital & Printed Text
     gray_ocr = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
-    gray_ocr = cv2.resize(gray_ocr, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-    ocr_input = cv2.threshold(gray_ocr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    
+    # Resize image to standard baseline resolution
+    ocr_input = cv2.resize(gray_ocr, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
 
     # OCR Section
     st.markdown("---")
-    st.subheader("📝 Extracted Text & Summary")
+    st.subheader("📝 Extracted Text (OCR Output)")
     
     try:
-        # Enforce English Language and Uniform Page Segmentation Mode
-        custom_config = r'--oem 3 --psm 6'
+        # --psm 3 handles automatic page segmentation with complex layouts (headings, bullet points, columns)
+        custom_config = r'--oem 3 --psm 3'
         ocr_text = pytesseract.image_to_string(ocr_input, lang='eng', config=custom_config)
         
-        st.text_area("OCR Result Output", ocr_text, height=150)
-        
-        # Summary Generator Toggle
-        if st.button("📌 Generate Clean Notes Summary"):
-            st.markdown("### 📌 Structured Summary")
-            st.markdown("""
-            **Topic:** Mealy Machine vs. Moore Machine  
+        if ocr_text.strip():
+            st.text_area("Raw Extracted OCR Text", ocr_text, height=250)
+            st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_notes.txt")
+        else:
+            st.warning("No text detected. Try adjusting crop parameters or capturing a clearer printed image.")
             
-            * **Mealy Machine:** Output depends on both current state and input. Placed on transition arrows. Output length is $N$.
-            * **Moore Machine:** Output depends only on current state. Placed inside state nodes. Output length is $N+1$.
-            """)
-            
-        st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_notes.txt")
-        
     except Exception as e:
         st.error(f"OCR Engine Error: {e}")
