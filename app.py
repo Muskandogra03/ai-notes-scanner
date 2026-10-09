@@ -3,118 +3,144 @@ import cv2
 import numpy as np
 from PIL import Image
 import pytesseract
-import io
-import img2pdf
+import fitz  # PyMuPDF (PDF reading ke liye)
+from youtube_transcript_api import YouTubeTranscriptApi
 
-st.set_page_config(
-    page_title="AI Document Scanner & OCR",
-    page_icon="📄",
-    layout="wide"
-)
+st.set_page_config(page_title="AI Document Scanner & Study Assistant", layout="wide")
 
-st.title("📄 AI Document Scanner & Multi-Page PDF Exporter")
-st.write("Scan document pages, remove shadows, extract OCR text, and generate downloadable PDFs!")
+st.title("📚 AI Study Assistant & Document Scanner")
 
-# Initialize Session State for Multi-Page PDF
-if 'scanned_pages' not in st.session_state:
-    st.session_state.scanned_pages = []
+# Tab navigation
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📷 Document Scanner", 
+    "🖼️ Image Uploader",
+    "📄 PDF Uploader", 
+    "🎥 YouTube Summarizer", 
+    "❓ Ask Questions"
+])
 
-def apply_camscanner_magic_color(img_np):
-    lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
-    l, a, b = cv2.split(lab)
-    dilated_img = cv2.dilate(l, np.ones((7, 7), np.uint8))
-    bg_img = cv2.medianBlur(dilated_img, 21)
-    diff_img = 255 - cv2.absdiff(l, bg_img)
-    norm_img = cv2.normalize(diff_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
-    enhanced_lab = cv2.merge([norm_img, a, b])
-    enhanced_rgb = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
-    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    return cv2.filter2D(enhanced_rgb, -1, kernel)
+# Global memory (kisi bhi tab ka text Q&A mein chalega)
+if "extracted_text" not in st.session_state:
+    st.session_state["extracted_text"] = ""
 
-def apply_clean_bw(img_np):
-    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    return cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 15)
-
-# Sidebar Setup
-st.sidebar.header("⚙️ Scanner Controls")
-source = st.sidebar.radio("Select Input Source:", ("Take Photo (Camera)", "Upload Image"))
-filter_mode = st.sidebar.selectbox("Filter Effect:", ["Magic Color (CamScanner)", "Clean B&W", "Original Contrast", "Grayscale"])
-
-st.sidebar.subheader("✂️ Crop Adjuster (%)")
-top_crop = st.sidebar.slider("Top Crop", 0, 40, 0)
-bottom_crop = st.sidebar.slider("Bottom Crop", 0, 40, 0)
-left_crop = st.sidebar.slider("Left Crop", 0, 40, 0)
-right_crop = st.sidebar.slider("Right Crop", 0, 40, 0)
-
-image_file = st.camera_input("Capture Document Page") if source == "Take Photo (Camera)" else st.file_uploader("Upload Document Photo", type=["jpg", "png", "jpeg"])
-
-if image_file is not None:
-    pil_img = Image.open(image_file)
-    img_np = np.array(pil_img.convert('RGB'))
+# ---------------------------------------------------------
+# TAB 1: DOCUMENT SCANNER (Live Camera)
+# ---------------------------------------------------------
+with tab1:
+    st.header("📷 Live Document Scanner (Shadow Removal)")
+    img_file = st.camera_input("Photo Click Karein")
     
-    h, w, _ = img_np.shape
-    t, b = int(h * (top_crop / 100)), int(h * (1 - bottom_crop / 100))
-    l, r = int(w * (left_crop / 100)), int(w * (1 - right_crop / 100))
-    cropped_np = img_np[t:b, l:r] if (b > t and r > l) else img_np
+    if img_file:
+        bytes_data = img_file.getvalue()
+        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+        
+        # LAB Color Space Shadow Removal
+        lab = cv2.cvtColor(cv_img, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        dilated_l = cv2.dilate(l, np.ones((7, 7), np.uint8))
+        bg_img = cv2.medianBlur(dilated_l, 21)
+        diff_img = 255 - cv2.absdiff(l, bg_img)
+        norm_img = cv2.normalize(diff_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+        updated_lab = cv2.merge((norm_img, a, b))
+        scanned_img = cv2.cvtColor(updated_lab, cv2.COLOR_LAB2RGB)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(cv_img, caption="Original Image", use_container_width=True)
+        with col2:
+            st.image(scanned_img, caption="Clean Scanned Image", use_container_width=True)
+            
+        text = pytesseract.image_to_string(scanned_img)
+        st.session_state["extracted_text"] = text
+        st.success("Text extract ho gaya! Ab 'Ask Questions' tab par ja kar sawal pooch sakte hain.")
 
-    if filter_mode == "Magic Color (CamScanner)":
-        final_processed = apply_camscanner_magic_color(cropped_np)
-    elif filter_mode == "Clean B&W":
-        final_processed = apply_clean_bw(cropped_np)
-    elif filter_mode == "Original Contrast":
-        final_processed = cv2.convertScaleAbs(cropped_np, alpha=1.3, beta=10)
+# ---------------------------------------------------------
+# TAB 2: IMAGE UPLOADER (Fixed!)
+# ---------------------------------------------------------
+with tab2:
+    st.header("🖼️ Upload Image (PNG / JPG / JPEG)")
+    uploaded_image = st.file_uploader("Gallery se Image select karein", type=["png", "jpg", "jpeg"])
+    
+    if uploaded_image:
+        image = Image.open(uploaded_image)
+        st.image(image, caption="Uploaded Document Image", width=400)
+        
+        if st.button("Extract Text from Image"):
+            with st.spinner("OCR Processing chal raha hai..."):
+                ocr_text = pytesseract.image_to_string(image)
+                st.session_state["extracted_text"] = ocr_text
+                st.text_area("Extracted Text from Image:", ocr_text, height=200)
+                st.success("Image Text Save Ho Gaya! Ask Questions tab par questions poochna shuru karein.")
+
+# ---------------------------------------------------------
+# TAB 3: PDF UPLOADER
+# ---------------------------------------------------------
+with tab3:
+    st.header("📄 Upload PDF Document")
+    uploaded_pdf = st.file_uploader("PDF File select karein", type=["pdf"])
+    
+    if uploaded_pdf:
+        doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
+        pdf_text = ""
+        for page in doc:
+            pdf_text += page.get_text()
+        st.session_state["extracted_text"] = pdf_text
+        st.text_area("Extracted Text from PDF:", pdf_text, height=200)
+        st.success("PDF Text Save Ho Gaya!")
+
+# ---------------------------------------------------------
+# TAB 4: YOUTUBE LINK SUMMARIZER
+# ---------------------------------------------------------
+with tab4:
+    st.header("🎥 YouTube Video Notes & Summary")
+    yt_url = st.text_input("YouTube Video URL Paste Karein:")
+    
+    if yt_url:
+        try:
+            if "v=" in yt_url:
+                video_id = yt_url.split("v=")[1].split("&")[0]
+            elif "youtu.be/" in yt_url:
+                video_id = yt_url.split("youtu.be/")[1].split("?")[0]
+            else:
+                video_id = None
+                
+            if video_id:
+                st.video(yt_url)
+                if st.button("Generate Video Summary"):
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id)
+                    full_transcript = " ".join([item['text'] for item in transcript])
+                    st.session_state["extracted_text"] = full_transcript
+                    
+                    st.subheader("📝 Video Summary Notes:")
+                    st.write(full_transcript[:1000] + "...")
+                    st.success("Video Transcript Save Ho Gayi!")
+        except Exception:
+            st.error("Is video ki transcript/subtitles available nahi hain.")
+
+# ---------------------------------------------------------
+# TAB 5: ASK QUESTIONS & AUTO SUMMARY
+# ---------------------------------------------------------
+with tab5:
+    st.header("❓ Ask Questions from Loaded Content")
+    context = st.session_state.get("extracted_text", "")
+    
+    if not context:
+        st.warning("Pehle kisi bhi tab (Scanner, Image, PDF, ya YouTube) se content load karein!")
     else:
-        final_processed = cv2.cvtColor(cropped_np, cv2.COLOR_RGB2GRAY)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("1. Cropped Original")
-        st.image(cropped_np, use_container_width=True)
-    with col2:
-        st.subheader("2. Scanned Result")
-        st.image(final_processed, use_container_width=True)
-
-        # Image Download Button
-        res_pil = Image.fromarray(final_processed)
-        buf = io.BytesIO()
-        res_pil.save(buf, format="PNG")
-        st.download_button(
-            label="🖼️ Download Scanned Image",
-            data=buf.getvalue(),
-            file_name="scanned_document.png",
-            mime="image/png"
-        )
-
-        # Add to PDF Queue Button
-        if st.button("➕ Add This Page to PDF"):
-            st.session_state.scanned_pages.append(buf.getvalue())
-            st.success(f"Page added! Total pages in PDF: {len(st.session_state.scanned_pages)}")
-
-    st.subheader("3. Extracted Text (OCR)")
-    try:
-        text = pytesseract.image_to_string(final_processed)
-        if text.strip():
-            st.text_area("OCR Result:", text, height=180)
-            st.download_button("📥 Download OCR Text", data=text, file_name="notes_ocr.txt", mime="text/plain")
-    except Exception:
-        st.error("Tesseract Engine Error during text extraction.")
-
-# PDF Generation Section
-if st.session_state.scanned_pages:
-    st.markdown("---")
-    st.subheader(f"📚 Multi-Page PDF Document ({len(st.session_state.scanned_pages)} Pages)")
-    
-    col_pdf1, col_pdf2 = st.columns(2)
-    with col_pdf1:
-        pdf_bytes = img2pdf.convert(st.session_state.scanned_pages)
-        st.download_button(
-            label="📄 Download Complete PDF",
-            data=pdf_bytes,
-            file_name="scanned_notes_collection.pdf",
-            mime="application/pdf"
-        )
-    with col_pdf2:
-        if st.button("🗑️ Clear PDF Pages"):
-            st.session_state.scanned_pages = []
-            st.rerun()
+        if st.button("📌 Generate Bullet Points Summary"):
+            sentences = [s.strip() for s in context.split(".") if len(s.strip()) > 15]
+            st.subheader("Summary Key Points:")
+            for pt in sentences[:5]:
+                st.write(f"• {pt}")
+                
+        st.markdown("---")
+        user_q = st.text_input("Apna sawal poochein:")
+        if user_q:
+            words = user_q.lower().split()
+            matched = [s.strip() for s in context.split(".") if any(w in s.lower() for w in words if len(w) > 3)]
+            st.subheader("🤖 Answer:")
+            if matched:
+                for m in matched[:3]:
+                    st.write(f"👉 ...{m}...")
+            else:
+                st.write("Sawal ka jawab text me nahi mila.")
