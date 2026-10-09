@@ -24,13 +24,19 @@ filter_effect = st.sidebar.selectbox(
     ["Magic Color (CamScanner Look)", "Original Gray", "B&W High Contrast"]
 )
 
+# OCR Mode Option
+ocr_mode = st.sidebar.selectbox(
+    "Select OCR Binarization Mode:",
+    ["Standard Thresholding (Printed Text)", "Adaptive Thresholding (Handwritten/Low Contrast)"]
+)
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("✂️ Manual Crop Adjuster (%)")
 
 top_crop = st.sidebar.slider("Top Edge Crop", 0, 40, 5)
-bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 10)
-left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 9)
-right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 6)
+bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 10, 0)
+left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
+right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
 
 cv_img = None
 
@@ -62,7 +68,7 @@ if cv_img is not None:
     else:
         cropped_img = cv_img
 
-    # Apply Selected Filter
+    # Apply Selected Filter for Visual Output
     if filter_effect == "Magic Color (CamScanner Look)":
         lab = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
@@ -89,16 +95,32 @@ if cv_img is not None:
     with col2:
         st.image(processed_img, caption=f"Processed ({filter_effect})", use_container_width=True)
 
+    # Pre-processing Dedicated for OCR Engine
+    gray_ocr = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
+    
+    # Upscale Image to improve character recognition resolution
+    gray_ocr = cv2.resize(gray_ocr, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+
+    if ocr_mode == "Standard Thresholding (Printed Text)":
+        ocr_input = cv2.threshold(gray_ocr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    else:
+        ocr_input = cv2.adaptiveThreshold(
+            gray_ocr, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+
     # OCR Section
     st.markdown("---")
     st.subheader("📝 Extracted Text (OCR)")
     
     try:
-        ocr_text = pytesseract.image_to_string(processed_img)
+        # Configuration: OEM 3 (Default LSTM Engine), PSM 6 (Assume uniform text block)
+        custom_config = r'--oem 3 --psm 6'
+        ocr_text = pytesseract.image_to_string(ocr_input, config=custom_config)
+        
         if ocr_text.strip():
             st.text_area("OCR Result Output", ocr_text, height=200)
             st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_notes.txt")
         else:
-            st.warning("No clear text detected. Adjust crop boundaries or select printed documents.")
+            st.warning("No clear text detected. Adjust cropping sliders or try switching OCR Binarization Mode.")
     except Exception as e:
         st.error(f"OCR Engine Error: {e}")
