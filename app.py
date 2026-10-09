@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 from PIL import Image
 import pytesseract
+import re
+from collections import Counter
 
 # Page Configuration
 st.set_page_config(page_title="AI Document Scanner & OCR", layout="wide")
@@ -31,6 +33,38 @@ top_crop = st.sidebar.slider("Top Edge Crop", 0, 40, 0)
 bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 0)
 left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
 right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
+
+def generate_extractive_summary(text, max_sentences=4):
+    """Generates a dynamic summary based on sentence relevance in the extracted OCR text."""
+    # Split text into sentences or meaningful blocks
+    sentences = re.split(r'\.\s+|\n+', text)
+    clean_sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
+    
+    if not clean_sentences:
+        return []
+
+    # Calculate word frequency across the document
+    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+    # Exclude common stop words
+    stop_words = set(["the", "and", "for", "that", "this", "with", "from", "are", "was", "been", "using", "have", "has"])
+    filtered_words = [w for w in words if w not in stop_words]
+    word_counts = Counter(filtered_words)
+
+    # Score each sentence based on word frequency
+    sentence_scores = {}
+    for i, sentence in enumerate(clean_sentences):
+        score = 0
+        for word in re.findall(r'\b[a-zA-Z]{3,}\b', sentence.lower()):
+            if word in word_counts:
+                score += word_counts[word]
+        sentence_scores[i] = score
+
+    # Select top-ranked sentences while preserving original order
+    top_indices = sorted(sentence_scores, key=sentence_scores.get, reverse=True)[:max_sentences]
+    top_indices.sort()
+    
+    summary = [clean_sentences[idx] for idx in top_indices]
+    return summary
 
 cv_img = None
 
@@ -89,23 +123,32 @@ if cv_img is not None:
     with col2:
         st.image(processed_img, caption=f"Processed ({filter_effect})", use_container_width=True)
 
-    # Optimized Pre-processing Pipeline for Digital & Printed Text
+    # Pre-processing for OCR
     gray_ocr = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
-    
-    # Resize image to standard baseline resolution
     ocr_input = cv2.resize(gray_ocr, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
 
     # OCR Section
     st.markdown("---")
-    st.subheader("📝 Extracted Text (OCR Output)")
+    st.subheader("📝 Extracted Text & Summary")
     
     try:
-        # --psm 3 handles automatic page segmentation with complex layouts (headings, bullet points, columns)
         custom_config = r'--oem 3 --psm 3'
         ocr_text = pytesseract.image_to_string(ocr_input, lang='eng', config=custom_config)
         
         if ocr_text.strip():
-            st.text_area("Raw Extracted OCR Text", ocr_text, height=250)
+            st.text_area("OCR Result Output", ocr_text, height=200)
+            
+            # Dynamic Summary Generator Button
+            if st.button("📌 Generate Summary from Uploaded Document"):
+                st.markdown("### 📌 Extracted Key Summary Points")
+                summary_points = generate_extractive_summary(ocr_text)
+                
+                if summary_points:
+                    for point in summary_points:
+                        st.markdown(f"* {point}")
+                else:
+                    st.warning("Could not form a meaningful summary. Please ensure the document contains clear readable text.")
+                    
             st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_notes.txt")
         else:
             st.warning("No text detected. Try adjusting crop parameters or capturing a clearer printed image.")
