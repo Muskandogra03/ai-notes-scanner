@@ -2,6 +2,7 @@ streamlit
 opencv-python-headless
 numpy
 Pillow
-pytesseract
+easyocr
+torch
+torchvision
 PyMuPDF
-youtube-transcript-api
