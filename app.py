@@ -2,14 +2,24 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
-import pytesseract
+import easyocr
+import fitz  # PyMuPDF for PDF extraction
 import re
 from collections import Counter
 
 # Page Configuration
-st.set_page_config(page_title="AI Document Scanner ", layout="wide")
+st.set_page_config(page_title="AI Document Scanner & Study Assistant", layout="wide")
 
-st.title("📚 AI Document Scanner & OCR Engine")
+st.title("📚 AI Document Scanner & Study Assistant")
+st.markdown("Scan printed documents, handwritten notes, or upload multi-page PDF files for free text extraction and summary generation.")
+
+# Initialize EasyOCR Reader (Cached for performance)
+@st.cache_resource
+def load_ocr_reader():
+    return easyocr.Reader(['en'], gpu=False)
+
+with st.spinner("Loading OCR Neural Network Engine..."):
+    reader = load_ocr_reader()
 
 # Sidebar Controls
 st.sidebar.header("⚙️ Scanner Settings")
@@ -17,12 +27,12 @@ st.sidebar.header("⚙️ Scanner Settings")
 # Input Source Selection
 input_source = st.sidebar.radio(
     "Select Input Source:",
-    ("Take Photo (Camera)", "Upload Image")
+    ("Take Photo (Camera)", "Upload File (Image / PDF)")
 )
 
-# Filter Selection
+# Filter Selection (Only applicable for images)
 filter_effect = st.sidebar.selectbox(
-    "Select Filter Effect:",
+    "Select Filter Effect (Image Only):",
     ["Magic Color (CamScanner Look)", "Original Gray", "B&W High Contrast"]
 )
 
@@ -34,23 +44,19 @@ bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 0)
 left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
 right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
 
-def generate_extractive_summary(text, max_sentences=4):
-    """Generates a dynamic summary based on sentence relevance in the extracted OCR text."""
-    # Split text into sentences or meaningful blocks
+def generate_extractive_summary(text, max_sentences=5):
+    """Generates a dynamic summary based on sentence relevance."""
     sentences = re.split(r'\.\s+|\n+', text)
-    clean_sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
+    clean_sentences = [s.strip() for s in sentences if len(s.strip()) > 12]
     
     if not clean_sentences:
         return []
 
-    # Calculate word frequency across the document
     words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
-    # Exclude common stop words
     stop_words = set(["the", "and", "for", "that", "this", "with", "from", "are", "was", "been", "using", "have", "has"])
     filtered_words = [w for w in words if w not in stop_words]
     word_counts = Counter(filtered_words)
 
-    # Score each sentence based on word frequency
     sentence_scores = {}
     for i, sentence in enumerate(clean_sentences):
         score = 0
@@ -59,29 +65,51 @@ def generate_extractive_summary(text, max_sentences=4):
                 score += word_counts[word]
         sentence_scores[i] = score
 
-    # Select top-ranked sentences while preserving original order
     top_indices = sorted(sentence_scores, key=sentence_scores.get, reverse=True)[:max_sentences]
     top_indices.sort()
     
     summary = [clean_sentences[idx] for idx in top_indices]
     return summary
 
+# ---------------------------------------------------------
+# INPUT HANDLING
+# ---------------------------------------------------------
 cv_img = None
+pdf_text_content = None
 
-# Input Processing
 if input_source == "Take Photo (Camera)":
-    img_file = st.camera_input("Capture Document")
+    img_file = st.camera_input("Capture Document or Handwritten Notes")
     if img_file:
         bytes_data = img_file.getvalue()
         cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
 else:
-    uploaded_file = st.file_uploader("Upload Document Image", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader("Upload Image or PDF Document", type=["png", "jpg", "jpeg", "pdf"])
     if uploaded_file:
-        bytes_data = uploaded_file.getvalue()
-        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+        file_type = uploaded_file.name.split(".")[-1].lower()
+        
+        # Handling PDF Files
+        if file_type == "pdf":
+            st.success(f"📄 PDF Document Uploaded: {uploaded_file.name}")
+            with st.spinner("Extracting text from PDF pages..."):
+                try:
+                    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+                    extracted_pages = []
+                    for page_num in range(len(doc)):
+                        page = doc[page_num]
+                        extracted_pages.append(page.get_text())
+                    pdf_text_content = "\n".join(extracted_pages)
+                except Exception as e:
+                    st.error(f"Error processing PDF: {e}")
+        
+        # Handling Image Files
+        else:
+            bytes_data = uploaded_file.getvalue()
+            cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-# Main Image Processing Engine
+# ---------------------------------------------------------
+# IMAGE PROCESSING PIPELINE (For Camera & Image Uploads)
+# ---------------------------------------------------------
 if cv_img is not None:
     height, width, _ = cv_img.shape
     
@@ -123,35 +151,55 @@ if cv_img is not None:
     with col2:
         st.image(processed_img, caption=f"Processed ({filter_effect})", use_container_width=True)
 
-    # Pre-processing for OCR
-    gray_ocr = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
-    ocr_input = cv2.resize(gray_ocr, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-
     # OCR Section
     st.markdown("---")
     st.subheader("📝 Extracted Text & Summary")
     
-    try:
-        custom_config = r'--oem 3 --psm 3'
-        ocr_text = pytesseract.image_to_string(ocr_input, lang='eng', config=custom_config)
-        
-        if ocr_text.strip():
-            st.text_area("OCR Result Output", ocr_text, height=200)
-            
-            # Dynamic Summary Generator Button
-            if st.button("📌 Generate Summary from Uploaded Document"):
-                st.markdown("### 📌 Extracted Key Summary Points")
-                summary_points = generate_extractive_summary(ocr_text)
+    if st.button("🔍 Extract Text & Read Notes"):
+        with st.spinner("Analyzing text using Deep Learning OCR Engine..."):
+            try:
+                results = reader.readtext(processed_img, detail=0)
+                ocr_text = "\n".join(results)
                 
-                if summary_points:
-                    for point in summary_points:
-                        st.markdown(f"* {point}")
-                else:
-                    st.warning("Could not form a meaningful summary. Please ensure the document contains clear readable text.")
+                if ocr_text.strip():
+                    st.text_area("Extracted OCR Text", ocr_text, height=220)
                     
-            st.download_button("Download Text File (.txt)", data=ocr_text, file_name="scanned_notes.txt")
+                    st.markdown("---")
+                    st.markdown("### 📌 Document Summary")
+                    summary_points = generate_extractive_summary(ocr_text)
+                    
+                    if summary_points:
+                        for point in summary_points:
+                            st.markdown(f"* {point}")
+                    else:
+                        st.info("Summary generated from full extracted text above.")
+                        
+                    st.download_button("Download Extracted Text (.txt)", data=ocr_text, file_name="scanned_notes.txt")
+                else:
+                    st.warning("No readable text detected. Try adjusting crop bounds or improving lighting.")
+            except Exception as e:
+                st.error(f"OCR Extraction Error: {e}")
+
+# ---------------------------------------------------------
+# PDF PROCESSING PIPELINE
+# ---------------------------------------------------------
+elif pdf_text_content is not None:
+    st.markdown("---")
+    st.subheader("📝 Extracted PDF Text & Summary")
+    
+    if pdf_text_content.strip():
+        st.text_area("PDF Extracted Text", pdf_text_content, height=250)
+        
+        st.markdown("---")
+        st.markdown("### 📌 PDF Summary")
+        summary_points = generate_extractive_summary(pdf_text_content)
+        
+        if summary_points:
+            for point in summary_points:
+                st.markdown(f"* {point}")
         else:
-            st.warning("No text detected. Try adjusting crop parameters or capturing a clearer printed image.")
+            st.info("Full extracted text displayed above.")
             
-    except Exception as e:
-        st.error(f"OCR Engine Error: {e}")
+        st.download_button("Download PDF Text (.txt)", data=pdf_text_content, file_name="pdf_extracted_notes.txt")
+    else:
+        st.warning("No selectable text found in the PDF. If this is a scanned image PDF, please upload it as an image file.")
