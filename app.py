@@ -7,7 +7,7 @@ import re
 from collections import Counter
 
 # Page Configuration
-st.set_page_config(page_title="AI Document Scanner & OCR", layout="wide")
+st.set_page_config(page_title="AI Document Scanner ", layout="wide")
 
 st.title("📚 AI Document Scanner & OCR Engine")
 
