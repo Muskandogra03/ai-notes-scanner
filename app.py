@@ -13,12 +13,12 @@ st.set_page_config(page_title="AI Document Scanner & Study Assistant", layout="w
 st.title("📚 AI Document Scanner & Study Assistant")
 st.markdown("Scan printed documents, handwritten notes, or upload PDF files for free text extraction and summary generation.")
 
-# Initialize EasyOCR Reader with low-memory parameters
+# Initialize EasyOCR Reader
 @st.cache_resource
 def load_ocr_reader():
-    return easyocr.Reader(['en'], gpu=False, quantize=True)
+    return easyocr.Reader(['en'], gpu=False)
 
-with st.spinner("Loading Deep Learning OCR Engine..."):
+with st.spinner("Loading OCR Engine..."):
     reader = load_ocr_reader()
 
 # Sidebar Controls
@@ -42,28 +42,28 @@ bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 0)
 left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
 right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
 
-def preprocess_handwriting(img_bgr):
-    """Optimized image pipeline tailored specifically for handwritten text."""
-    # Convert to Grayscale
+def enhance_handwritten_image(img_bgr):
+    """Image pipeline optimized for handwritten notes recognition."""
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     
-    # Resize to standard width (~1200px) to stabilize neural detection
+    # Resize image to improve OCR stroke resolution
     h, w = gray.shape
-    target_w = 1200
-    if w != target_w:
-        aspect_ratio = h / w
-        target_h = int(target_w * aspect_ratio)
-        gray = cv2.resize(gray, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
-
-    # Denoise & Contrast Enhancement (CLAHE)
-    denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    enhanced = clahe.apply(denoised)
-    return enhanced
+    if w < 1000:
+        scale = 1000 / w
+        gray = cv2.resize(gray, (1000, int(h * scale)), interpolation=cv2.INTER_CUBIC)
+        
+    # Smooth paper noise while keeping stroke edges clear
+    blurred = cv2.bilateralFilter(gray, 7, 50, 50)
+    
+    # Adaptive thresholding to isolate pen/pencil ink from background
+    binary = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 8
+    )
+    return binary
 
 def generate_extractive_summary(text, max_sentences=5):
     sentences = re.split(r'\.\s+|\n+', text)
-    clean_sentences = [s.strip() for s in sentences if len(s.strip()) > 12]
+    clean_sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
     
     if not clean_sentences:
         return []
@@ -129,7 +129,7 @@ if cv_img is not None:
         cropped_img = cv_img
 
     if filter_effect == "Adaptive Handwriting Enhancement":
-        processed_gray = preprocess_handwriting(cropped_img)
+        processed_gray = enhance_handwritten_image(cropped_img)
         processed_img = cv2.cvtColor(processed_gray, cv2.COLOR_GRAY2RGB)
     elif filter_effect == "Magic Color (CamScanner Look)":
         lab = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2LAB)
@@ -157,18 +157,17 @@ if cv_img is not None:
     st.subheader("📝 Extracted Text & Summary")
     
     if st.button("🔍 Extract Text & Read Notes"):
-        with st.spinner("Processing handwritten content with Neural OCR..."):
+        with st.spinner("Reading handwritten text..."):
             try:
-                ocr_target = preprocess_handwriting(cropped_img)
-                # Tuned detection parameters for handwriting
-                results = reader.readtext(
-                    ocr_target, 
-                    detail=0, 
-                    paragraph=True,
-                    adjust_contrast=0.5,
-                    beamWidth=5
-                )
-                ocr_text = "\n".join(results)
+                # 1. First pass: Run EasyOCR on cropped original image
+                raw_results = reader.readtext(cropped_img, detail=0)
+                ocr_text = "\n".join(raw_results)
+                
+                # 2. Second pass fallback: If raw image yields minimal text, run on binarized image
+                if len(ocr_text.strip()) < 15:
+                    binary_img = enhance_handwritten_image(cropped_img)
+                    fallback_results = reader.readtext(binary_img, detail=0)
+                    ocr_text = "\n".join(fallback_results)
                 
                 if ocr_text.strip():
                     st.text_area("Extracted OCR Text", ocr_text, height=220)
@@ -184,7 +183,7 @@ if cv_img is not None:
                         
                     st.download_button("Download Text (.txt)", data=ocr_text, file_name="scanned_notes.txt")
                 else:
-                    st.warning("No readable text detected. Ensure good lighting and try adjusting crop boundaries.")
+                    st.warning("No readable text detected. Ensure proper lighting and try adjusting crop boundaries.")
             except Exception as e:
                 st.error(f"OCR Extraction Error: {e}")
 
