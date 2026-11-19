@@ -2,24 +2,29 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
-import easyocr
+from google import genai
 import fitz  # PyMuPDF
-import re
-from collections import Counter
 
 # Page Configuration
 st.set_page_config(page_title="AI Document Scanner & Study Assistant", layout="wide")
 
 st.title("📚 AI Document Scanner & Study Assistant")
-st.markdown("Scan printed documents, handwritten notes, or upload PDF files for free text extraction and summary generation.")
+st.markdown("Scan handwritten notes, syllabus screenshots, or multi-page PDFs for human-level text extraction, structured study summaries, and interactive Q&A.")
 
-# Initialize EasyOCR Reader
+# Initialize Gemini AI Client
 @st.cache_resource
-def load_ocr_reader():
-    return easyocr.Reader(['en'], gpu=False)
+def get_gemini_client():
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+        return genai.Client(api_key=api_key)
+    except Exception:
+        return None
 
-with st.spinner("Loading OCR Engine..."):
-    reader = load_ocr_reader()
+client = get_gemini_client()
+
+if client is None:
+    st.error("⚠️ GEMINI_API_KEY missing! Please add your free Google AI Studio key in Streamlit Cloud Secrets.")
+    st.stop()
 
 # Sidebar Controls
 st.sidebar.header("⚙️ Scanner Settings")
@@ -31,7 +36,7 @@ input_source = st.sidebar.radio(
 
 filter_effect = st.sidebar.selectbox(
     "Select Filter Effect (Image Only):",
-    ["Adaptive Handwriting Enhancement", "Magic Color (CamScanner Look)", "Original Gray", "B&W High Contrast"]
+    ["Original Color", "Magic Color (CamScanner Look)", "Original Gray", "B&W High Contrast"]
 )
 
 st.sidebar.markdown("---")
@@ -42,107 +47,36 @@ bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 0)
 left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
 right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
 
-def enhance_handwritten_image(img_bgr):
-    """Image pipeline optimized for handwritten notes recognition."""
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-
-    # Resize image to improve OCR stroke resolution
-    h, w = gray.shape
-    if w < 1000:
-        scale = 1000 / w
-        gray = cv2.resize(gray, (1000, int(h * scale)), interpolation=cv2.INTER_CUBIC)
-
-    # Smooth paper noise while keeping stroke edges clear
-    blurred = cv2.bilateralFilter(gray, 7, 50, 50)
-
-    # Adaptive thresholding to isolate pen/pencil ink from background
-    binary = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 8
-    )
-    return binary
-
-def generate_extractive_summary(text, max_sentences=5):
-    sentences = re.split(r'\.\s+|\n+', text)
-    clean_sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
-
-    if not clean_sentences:
-        return []
-
-    words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
-    stop_words = set(["the", "and", "for", "that", "this", "with", "from", "are", "was", "been", "using", "have", "has"])
-    filtered_words = [w for w in words if w not in stop_words]
-    word_counts = Counter(filtered_words)
-
-    sentence_scores = {}
-    for i, sentence in enumerate(clean_sentences):
-        score = sum(word_counts[word] for word in re.findall(r'\b[a-zA-Z]{3,}\b', sentence.lower()) if word in word_counts)
-        sentence_scores[i] = score
-
-    top_indices = sorted(sentence_scores, key=sentence_scores.get, reverse=True)[:max_sentences]
-    top_indices.sort()
-
-    return [clean_sentences[idx] for idx in top_indices]
+# Session state to store extracted content for Q&A
+if "study_context" not in st.session_state:
+    st.session_state.study_context = ""
 
 # ---------------------------------------------------------
 # INPUT HANDLING
 # ---------------------------------------------------------
 cv_img = None
-pdf_text_content = None
+pdf_bytes = None
+pdf_name = None
 
 if input_source == "Take Photo (Camera)":
     img_file = st.camera_input("Capture Document or Handwritten Notes")
     if img_file:
         bytes_data = img_file.getvalue()
         cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-
 else:
     uploaded_file = st.file_uploader("Upload Image or PDF Document", type=["png", "jpg", "jpeg", "pdf"])
     if uploaded_file:
         file_type = uploaded_file.name.split(".")[-1].lower()
-
         if file_type == "pdf":
-            st.success(f"📄 PDF Uploaded: {uploaded_file.name}")
-            with st.spinner("Extracting text from PDF..."):
-                try:
-                    doc = fitz.open(
-                        stream=uploaded_file.getvalue(),
-                        filetype="pdf"
-                    )
-                    all_pages_text = []
-
-                    for page_number, page in enumerate(doc):
-                        # First try normal PDF text extraction
-                        page_text = page.get_text().strip()
-
-                        # If PDF has no selectable text, use OCR
-                        if not page_text:
-                            pix = page.get_pixmap(
-                                matrix=fitz.Matrix(2, 2),
-                                alpha=False
-                            )
-                            img = np.frombuffer(
-                                pix.samples,
-                                dtype=np.uint8
-                            ).reshape(pix.height, pix.width, pix.n)
-                            img = cv2.cvtColor(
-                                img, cv2.COLOR_RGB2BGR
-                            )
-                            results = reader.readtext(img, detail=0)
-                            page_text = "\n".join(results)
-
-                        all_pages_text.append(
-                            f"--- Page {page_number + 1} ---\n{page_text}"
-                        )
-
-                    pdf_text_content = "\n\n".join(all_pages_text)
-                except Exception as e:
-                    st.error(f"Error reading PDF: {e}")
+            pdf_bytes = uploaded_file.getvalue()
+            pdf_name = uploaded_file.name
+            st.success(f"📄 PDF Uploaded: {pdf_name}")
         else:
             bytes_data = uploaded_file.getvalue()
             cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
 # ---------------------------------------------------------
-# IMAGE PROCESSING & OCR
+# IMAGE PROCESSING & REAL AI EXTRACTION
 # ---------------------------------------------------------
 if cv_img is not None:
     height, width, _ = cv_img.shape
@@ -157,10 +91,7 @@ if cv_img is not None:
     else:
         cropped_img = cv_img
 
-    if filter_effect == "Adaptive Handwriting Enhancement":
-        processed_gray = enhance_handwritten_image(cropped_img)
-        processed_img = cv2.cvtColor(processed_gray, cv2.COLOR_GRAY2RGB)
-    elif filter_effect == "Magic Color (CamScanner Look)":
+    if filter_effect == "Magic Color (CamScanner Look)":
         lab = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         dilated_l = cv2.dilate(l, np.ones((7, 7), np.uint8))
@@ -171,10 +102,12 @@ if cv_img is not None:
     elif filter_effect == "Original Gray":
         gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
         processed_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-    else:
+    elif filter_effect == "B&W High Contrast":
         gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
         thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
         processed_img = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
+    else:
+        processed_img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -183,49 +116,89 @@ if cv_img is not None:
         st.image(processed_img, caption=f"Processed ({filter_effect})", use_container_width=True)
 
     st.markdown("---")
-    st.subheader("📝 Extracted Text & Summary")
-
-    if st.button("🔍 Extract Text & Read Notes"):
-        with st.spinner("Reading handwritten text..."):
+    if st.button("✨ Extract Text & Generate AI Study Summary"):
+        with st.spinner("AI Vision Model reading and organizing your notes..."):
             try:
-                # 1. First pass: Run EasyOCR on cropped original image
-                raw_results = reader.readtext(cropped_img, detail=0)
-                ocr_text = "\n".join(raw_results)
-
-                # 2. Second pass fallback: If raw image yields minimal text, run on binarized image
-                if len(ocr_text.strip()) < 15:
-                    binary_img = enhance_handwritten_image(cropped_img)
-                    fallback_results = reader.readtext(binary_img, detail=0)
-                    ocr_text = "\n".join(fallback_results)
-
-                if ocr_text.strip():
-                    st.text_area("Extracted OCR Text", ocr_text, height=220)
-                    st.markdown("---")
-                    st.markdown("### 📌 Document Summary")
-                    summary_points = generate_extractive_summary(ocr_text)
-
-                    if summary_points:
-                        for point in summary_points:
-                            st.markdown(f"* {point}")
-                    else:
-                        st.info("Full text extracted above.")
-
-                    st.download_button("Download Text (.txt)", data=ocr_text, file_name="scanned_notes.txt")
-                else:
-                    st.warning("No readable text detected. Ensure proper lighting and try adjusting crop boundaries.")
+                pil_image = Image.fromarray(processed_img)
+                prompt = (
+                    "You are an intelligent academic study assistant. Analyze this image carefully "
+                    "(whether it is handwritten notes, printed text, or a syllabus table) and provide:\n\n"
+                    "### 📝 Extracted Text\n"
+                    "(Transcribe all text accurately and cleanly)\n\n"
+                    "### 📌 Structured Study Summary\n"
+                    "(Organize the key topics, units, or concepts into clear headings and crisp, easy-to-revise bullet points — never cut sentences mid-way.)"
+                )
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[pil_image, prompt]
+                )
+                result_text = response.text
+                st.session_state.study_context = result_text
+                st.markdown(result_text)
+                st.download_button("⬇️ Download AI Notes (.txt)", data=result_text, file_name="ai_study_notes.txt")
             except Exception as e:
-                st.error(f"OCR Extraction Error: {e}")
+                st.error(f"AI Processing Error: {e}")
 
-elif pdf_text_content is not None:
+# ---------------------------------------------------------
+# PDF PROCESSING & REAL AI EXTRACTION (Supports Scanned + Digital PDFs)
+# ---------------------------------------------------------
+elif pdf_bytes is not None:
     st.markdown("---")
-    st.subheader("📝 Extracted PDF Text & Summary")
-    if pdf_text_content.strip():
-        st.text_area("PDF Extracted Text", pdf_text_content, height=250)
-        st.markdown("---")
-        st.markdown("### 📌 PDF Summary")
-        summary_points = generate_extractive_summary(pdf_text_content)
-        for point in summary_points:
-            st.markdown(f"* {point}")
-        st.download_button("Download PDF Text (.txt)", data=pdf_text_content, file_name="pdf_notes.txt")
-    else:
-        st.warning("No selectable text found in the PDF.")
+    if st.button("✨ Analyze PDF & Generate AI Study Summary"):
+        with st.spinner("Reading PDF pages and generating structured summary..."):
+            try:
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                contents_to_send = []
+                extracted_digital_text = []
+
+                for page_num, page in enumerate(doc):
+                    text = page.get_text().strip()
+                    if text:
+                        extracted_digital_text.append(f"--- Page {page_num + 1} ---\n{text}")
+                    else:
+                        # Scanned/handwritten PDF page -> convert to image for Gemini Vision
+                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                        img_pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        contents_to_send.append(img_pil)
+
+                prompt = (
+                    "You are an expert study assistant. Analyze the provided PDF pages/text and create:\n"
+                    "1. ### 📌 Clean Unit-wise / Topic-wise Summary (well-structured bullet points, complete sentences)\n"
+                    "2. ### 💡 Key Exam Takeaways (most important concepts to remember)"
+                )
+
+                if extracted_digital_text:
+                    full_text = "\n\n".join(extracted_digital_text)
+                    contents_to_send.insert(0, full_text)
+
+                contents_to_send.append(prompt)
+
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=contents_to_send
+                )
+                result_text = response.text
+                st.session_state.study_context = result_text
+                st.markdown(result_text)
+                st.download_button("⬇️ Download PDF Summary (.txt)", data=result_text, file_name="ai_pdf_summary.txt")
+            except Exception as e:
+                st.error(f"PDF AI Error: {e}")
+
+# ---------------------------------------------------------
+# BONUS: INTERACTIVE AI STUDY DOUBT SOLVER
+# ---------------------------------------------------------
+if st.session_state.study_context:
+    st.markdown("---")
+    st.subheader("💬 Ask AI About These Notes")
+    user_q = st.text_input("Ask a question (e.g., 'Explain Unit 2 simply' or 'Create 5 viva questions from this'):")
+    if st.button("Ask AI") and user_q.strip():
+        with st.spinner("Thinking..."):
+            try:
+                qa_prompt = f"Based on these study notes:\n\n{st.session_state.study_context}\n\nAnswer this student's question clearly:\n{user_q}"
+                qa_response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=qa_prompt
+                )
+                st.markdown(qa_response.text)
+            except Exception as e:
+                st.error(f"Error: {e}")
