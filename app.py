@@ -187,18 +187,93 @@ elif pdf_bytes is not None:
 # ---------------------------------------------------------
 # BONUS: INTERACTIVE AI STUDY DOUBT SOLVER
 # ---------------------------------------------------------
+
+# ---------------------------------------------------------
+# BONUS 1: INTERACTIVE AI STUDY DOUBT SOLVER
+# ---------------------------------------------------------
+
 if st.session_state.study_context:
+
     st.markdown("---")
-    st.subheader("💬 Ask AI About These Notes")
-    user_q = st.text_input("Ask a question (e.g., 'Explain Unit 2 simply' or 'Create 5 viva questions from this'):")
-    if st.button("Ask AI") and user_q.strip():
-        with st.spinner("Thinking..."):
+    st.subheader("💬 Ask AI About Your Notes")
+
+    user_q = st.text_input(
+        "Ask any question from your uploaded notes:",
+        placeholder="Example: Explain Unit 2 in simple language"
+    )
+
+    if st.button("🤖 Ask AI") and user_q.strip():
+
+        with st.spinner("AI is preparing your answer..."):
+
             try:
-                qa_prompt = f"Based on these study notes:\n\n{st.session_state.study_context}\n\nAnswer this student's question clearly:\n{user_q}"
+                qa_prompt = f"""
+                Based on these study notes:
+
+                {st.session_state.study_context}
+
+                Answer the student's question:
+                {user_q}
+
+                Instructions:
+                1. Explain in simple language.
+                2. Give examples wherever required.
+                3. Use headings and bullet points.
+                4. Make the answer exam-friendly.
+                """
+
                 qa_response = client.models.generate_content(
                     model="gemini-3.8-flash",
                     contents=qa_prompt
                 )
+
+                st.markdown("### 📖 AI Answer")
                 st.markdown(qa_response.text)
+
             except Exception as e:
                 st.error(f"Error: {e}")
+
+
+# ---------------------------------------------------------
+# BONUS 2: YOUTUBE LEARNING RECOMMENDATIONS
+# ---------------------------------------------------------
+
+import urllib.parse
+
+if st.session_state.study_context:
+
+    st.markdown("---")
+    st.subheader("🎥 Learn More with YouTube")
+
+    st.write(
+        "Find educational videos related to your uploaded notes."
+    )
+
+    youtube_topic = st.text_input(
+        "Enter Topic for YouTube Videos:",
+        placeholder="Example: DBMS Normalization"
+    )
+
+    if st.button("🔍 Find YouTube Videos"):
+
+        if youtube_topic.strip():
+
+            search_query = urllib.parse.quote_plus(
+                youtube_topic + " tutorial for students"
+            )
+
+            youtube_url = (
+                "https://www.youtube.com/results?search_query="
+                + search_query
+            )
+
+            st.success("YouTube learning resources are ready!")
+
+            st.link_button(
+                "▶️ Watch YouTube Videos",
+                youtube_url
+            )
+
+        else:
+            st.warning("Please enter a topic first.")
+
