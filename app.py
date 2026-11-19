@@ -129,7 +129,7 @@ if cv_img is not None:
                     "(Organize the key topics, units, or concepts into clear headings and crisp, easy-to-revise bullet points — never cut sentences mid-way.)"
                 )
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.8-flash",
                     contents=[pil_image, prompt]
                 )
                 result_text = response.text
@@ -174,7 +174,7 @@ elif pdf_bytes is not None:
                 contents_to_send.append(prompt)
 
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.8-flash",
                     contents=contents_to_send
                 )
                 result_text = response.text
@@ -196,7 +196,7 @@ if st.session_state.study_context:
             try:
                 qa_prompt = f"Based on these study notes:\n\n{st.session_state.study_context}\n\nAnswer this student's question clearly:\n{user_q}"
                 qa_response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.8-flash",
                     contents=qa_prompt
                 )
                 st.markdown(qa_response.text)
