@@ -99,54 +99,55 @@ else:
     uploaded_file = st.file_uploader("Upload Image or PDF Document", type=["png", "jpg", "jpeg", "pdf"])
     if uploaded_file:
         file_type = uploaded_file.name.split(".")[-1].lower()
-        
+
         if file_type == "pdf":
             st.success(f"📄 PDF Uploaded: {uploaded_file.name}")
             with st.spinner("Extracting text from PDF..."):
                 try:
                     doc = fitz.open(
-    stream=uploaded_file.getvalue(),
-    filetype="pdf"
-)
+                        stream=uploaded_file.getvalue(),
+                        filetype="pdf"
+                    )
 
-all_pages_text = []
+                    all_pages_text = []
 
-for page_number, page in enumerate(doc):
+                    for page_number, page in enumerate(doc):
+                        # First try normal PDF text extraction
+                        page_text = page.get_text().strip()
 
-    # First try normal PDF text extraction
-    page_text = page.get_text().strip()
+                        # If PDF has no selectable text, use OCR
+                        if not page_text:
+                            pix = page.get_pixmap(
+                                matrix=fitz.Matrix(2, 2),
+                                alpha=False
+                            )
 
-    # If PDF has no selectable text, use OCR
-    if not page_text:
+                            img = np.frombuffer(
+                                pix.samples,
+                                dtype=np.uint8
+                            ).reshape(pix.height, pix.width, pix.n)
 
-        pix = page.get_pixmap(
-            matrix=fitz.Matrix(2, 2),
-            alpha=False
-        )
+                            img = cv2.cvtColor(
+                                img, cv2.COLOR_RGB2BGR
+                            )
 
-        img = np.frombuffer(
-            pix.samples,
-            dtype=np.uint8
-        ).reshape(pix.height, pix.width, pix.n)
+                            results = reader.readtext(img, detail=0)
+                            page_text = "\n".join(results)
 
-        img = cv2.cvtColor(
-            img, cv2.COLOR_RGB2BGR
-        )
+                        all_pages_text.append(
+                            f"--- Page {page_number + 1} ---\n{page_text}"
+                        )
 
-        results = reader.readtext(img, detail=0)
-
-        page_text = "\n".join(results)
-
-    all_pages_text.append(
-        f"--- Page {page_number + 1} ---\n{page_text}"
-    )
-
-pdf_text_content = "\n\n".join(all_pages_text)
+                    pdf_text_content = "\n\n".join(all_pages_text)
                 except Exception as e:
                     st.error(f"Error reading PDF: {e}")
         else:
             bytes_data = uploaded_file.getvalue()
             cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+   
+       
+
+
 
 # ---------------------------------------------------------
 # IMAGE PROCESSING & OCR
