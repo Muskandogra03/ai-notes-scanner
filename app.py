@@ -45,16 +45,16 @@ right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
 def enhance_handwritten_image(img_bgr):
     """Image pipeline optimized for handwritten notes recognition."""
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    
+
     # Resize image to improve OCR stroke resolution
     h, w = gray.shape
     if w < 1000:
         scale = 1000 / w
         gray = cv2.resize(gray, (1000, int(h * scale)), interpolation=cv2.INTER_CUBIC)
-        
+
     # Smooth paper noise while keeping stroke edges clear
     blurred = cv2.bilateralFilter(gray, 7, 50, 50)
-    
+
     # Adaptive thresholding to isolate pen/pencil ink from background
     binary = cv2.adaptiveThreshold(
         blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 8
@@ -64,7 +64,7 @@ def enhance_handwritten_image(img_bgr):
 def generate_extractive_summary(text, max_sentences=5):
     sentences = re.split(r'\.\s+|\n+', text)
     clean_sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
-    
+
     if not clean_sentences:
         return []
 
@@ -80,7 +80,7 @@ def generate_extractive_summary(text, max_sentences=5):
 
     top_indices = sorted(sentence_scores, key=sentence_scores.get, reverse=True)[:max_sentences]
     top_indices.sort()
-    
+
     return [clean_sentences[idx] for idx in top_indices]
 
 # ---------------------------------------------------------
@@ -108,7 +108,6 @@ else:
                         stream=uploaded_file.getvalue(),
                         filetype="pdf"
                     )
-
                     all_pages_text = []
 
                     for page_number, page in enumerate(doc):
@@ -121,16 +120,13 @@ else:
                                 matrix=fitz.Matrix(2, 2),
                                 alpha=False
                             )
-
                             img = np.frombuffer(
                                 pix.samples,
                                 dtype=np.uint8
                             ).reshape(pix.height, pix.width, pix.n)
-
                             img = cv2.cvtColor(
                                 img, cv2.COLOR_RGB2BGR
                             )
-
                             results = reader.readtext(img, detail=0)
                             page_text = "\n".join(results)
 
@@ -144,22 +140,18 @@ else:
         else:
             bytes_data = uploaded_file.getvalue()
             cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-   
-       
-
-
 
 # ---------------------------------------------------------
 # IMAGE PROCESSING & OCR
 # ---------------------------------------------------------
 if cv_img is not None:
     height, width, _ = cv_img.shape
-    
+
     top_px = int(height * (top_crop / 100))
     bottom_px = int(height * (1 - (bottom_crop / 100)))
     left_px = int(width * (left_crop / 100))
-    right_px = int(width * (right_crop / 100))
-    
+    right_px = int(width * (1 - (right_crop / 100)))
+
     if top_px < bottom_px and left_px < right_px:
         cropped_img = cv_img[top_px:bottom_px, left_px:right_px]
     else:
@@ -192,32 +184,32 @@ if cv_img is not None:
 
     st.markdown("---")
     st.subheader("📝 Extracted Text & Summary")
-    
+
     if st.button("🔍 Extract Text & Read Notes"):
         with st.spinner("Reading handwritten text..."):
             try:
                 # 1. First pass: Run EasyOCR on cropped original image
                 raw_results = reader.readtext(cropped_img, detail=0)
                 ocr_text = "\n".join(raw_results)
-                
+
                 # 2. Second pass fallback: If raw image yields minimal text, run on binarized image
                 if len(ocr_text.strip()) < 15:
                     binary_img = enhance_handwritten_image(cropped_img)
                     fallback_results = reader.readtext(binary_img, detail=0)
                     ocr_text = "\n".join(fallback_results)
-                
+
                 if ocr_text.strip():
                     st.text_area("Extracted OCR Text", ocr_text, height=220)
                     st.markdown("---")
                     st.markdown("### 📌 Document Summary")
                     summary_points = generate_extractive_summary(ocr_text)
-                    
+
                     if summary_points:
                         for point in summary_points:
                             st.markdown(f"* {point}")
                     else:
                         st.info("Full text extracted above.")
-                        
+
                     st.download_button("Download Text (.txt)", data=ocr_text, file_name="scanned_notes.txt")
                 else:
                     st.warning("No readable text detected. Ensure proper lighting and try adjusting crop boundaries.")
