@@ -21,7 +21,7 @@ def get_gemini_client():
         api_key = st.secrets["GEMINI_API_KEY"]
         return genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=12000)  # 12s max per request
+            http_options=types.HttpOptions(timeout=25000)  # 25s max per request
         )
     except Exception:
         return None
@@ -45,7 +45,7 @@ MODEL_PRIORITY = [
 
 ]
 
-def compress_image_to_jpeg_part(pil_img, max_dim=850, quality=72):
+def compress_image_to_jpeg_part(pil_img, max_dim=800, quality=72):
     """Resize and compress image to lightweight JPEG for fast upload."""
     w, h = pil_img.size
     if max(w, h) > max_dim:
