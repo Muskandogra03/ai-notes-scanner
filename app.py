@@ -39,8 +39,9 @@ FAST_CONFIG = types.GenerateContentConfig(
 )
 
 MODEL_PRIORITY = [
+   
+   "gemini-3.8-flash",
     "gemini-3.8-flash-lite",
-    "gemini-3.8-flash",
 
 ]
 
