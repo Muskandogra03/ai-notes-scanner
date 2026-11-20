@@ -41,8 +41,7 @@ FAST_CONFIG = types.GenerateContentConfig(
 MODEL_PRIORITY = [
     "gemini-3.8-flash-lite",
     "gemini-3.8-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
+
 ]
 
 def compress_image_to_jpeg_part(pil_img, max_dim=850, quality=72):
