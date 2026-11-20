@@ -3,20 +3,26 @@ import cv2
 import numpy as np
 from PIL import Image
 from google import genai
+from google.genai import types
 import fitz  # PyMuPDF
+import io
+import time
 
 # Page Configuration
 st.set_page_config(page_title="AI Document Scanner & Study Assistant", layout="wide")
 
 st.title("📚 AI Document Scanner & Study Assistant")
-st.markdown("Scan handwritten notes, syllabus screenshots, or multi-page PDFs for human-level text extraction, structured study summaries, and interactive Q&A.")
+st.markdown("Scan handwritten notes, syllabus screenshots, or multi-page PDFs for fast text extraction, structured study summaries, and interactive Q&A.")
 
-# Initialize Gemini AI Client
+# Initialize Gemini AI Client with short timeout so it never hangs for minutes
 @st.cache_resource
 def get_gemini_client():
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
-        return genai.Client(api_key=api_key)
+        return genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=12000)  # 12s max per request
+        )
     except Exception:
         return None
 
@@ -25,6 +31,51 @@ client = get_gemini_client()
 if client is None:
     st.error("⚠️ GEMINI_API_KEY missing! Please add your free Google AI Studio key in Streamlit Cloud Secrets.")
     st.stop()
+
+FAST_CONFIG = types.GenerateContentConfig(
+    thinking_config=types.ThinkingConfig(thinking_budget=0),
+    temperature=0.2,
+    max_output_tokens=1400
+)
+
+MODEL_PRIORITY = [
+    "gemini-3.8-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+]
+
+def compress_image_to_jpeg_part(pil_img, max_dim=850, quality=72):
+    """Resize and compress image to lightweight JPEG for fast upload."""
+    w, h = pil_img.size
+    if max(w, h) > max_dim:
+        scale = max_dim / float(max(w, h))
+        pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+    if pil_img.mode != "RGB":
+        pil_img = pil_img.convert("RGB")
+    buf = io.BytesIO()
+    pil_img.save(buf, format="JPEG", quality=quality, optimize=True)
+    return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
+
+def generate_fast_response(contents):
+    """Tries fast models quickly without long retry loops; raises clear status on overload."""
+    last_err = None
+    for model_name in MODEL_PRIORITY:
+        try:
+            return client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=FAST_CONFIG
+            )
+        except Exception as e:
+            last_err = e
+            err_str = str(e)
+            # If model not found, try next model immediately; if 503/429, try one fallback quickly
+            if "NOT_FOUND" in err_str or "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
+                time.sleep(0.5)
+                continue
+            raise e
+    raise last_err
 
 # Sidebar Controls
 st.sidebar.header("⚙️ Scanner Settings")
@@ -76,7 +127,7 @@ else:
             cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
 # ---------------------------------------------------------
-# IMAGE PROCESSING & REAL AI EXTRACTION
+# IMAGE PROCESSING & FAST AI EXTRACTION
 # ---------------------------------------------------------
 if cv_img is not None:
     height, width, _ = cv_img.shape
@@ -117,163 +168,100 @@ if cv_img is not None:
 
     st.markdown("---")
     if st.button("✨ Extract Text & Generate AI Study Summary"):
-        with st.spinner("AI Vision Model reading and organizing your notes..."):
+        start_time = time.time()
+        with st.spinner("Extracting and summarizing..."):
             try:
-                pil_image = Image.fromarray(processed_img)
+                img_part = compress_image_to_jpeg_part(Image.fromarray(processed_img))
                 prompt = (
-                    "You are an intelligent academic study assistant. Analyze this image carefully "
-                    "(whether it is handwritten notes, printed text, or a syllabus table) and provide:\n\n"
+                    "Analyze this document/note image and provide:\n"
                     "### 📝 Extracted Text\n"
-                    "(Transcribe all text accurately and cleanly)\n\n"
+                    "(Clean, accurate transcription)\n\n"
                     "### 📌 Structured Study Summary\n"
-                    "(Organize the key topics, units, or concepts into clear headings and crisp, easy-to-revise bullet points — never cut sentences mid-way.)"
+                    "(Organize topics/units into clear headings and crisp, complete bullet points)"
                 )
-                response = client.models.generate_content(
-                    model="gemini-3.8-flash",
-                    contents=[pil_image, prompt]
-                )
+                response = generate_fast_response([img_part, prompt])
+                elapsed = round(time.time() - start_time, 2)
                 result_text = response.text
                 st.session_state.study_context = result_text
+                st.success(f"⚡ Completed in {elapsed} seconds!")
                 st.markdown(result_text)
                 st.download_button("⬇️ Download AI Notes (.txt)", data=result_text, file_name="ai_study_notes.txt")
             except Exception as e:
-                st.error(f"AI Processing Error: {e}")
+                elapsed = round(time.time() - start_time, 2)
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    st.warning(f"⚠️ Gemini servers are temporarily experiencing high traffic ({elapsed}s). Please click the button again in a few seconds.")
+                else:
+                    st.error(f"AI Processing Error ({elapsed}s): {e}")
 
 # ---------------------------------------------------------
-# PDF PROCESSING & REAL AI EXTRACTION (Supports Scanned + Digital PDFs)
+# PDF PROCESSING & FAST AI EXTRACTION
 # ---------------------------------------------------------
 elif pdf_bytes is not None:
     st.markdown("---")
     if st.button("✨ Analyze PDF & Generate AI Study Summary"):
-        with st.spinner("Reading PDF pages and generating structured summary..."):
+        start_time = time.time()
+        with st.spinner("Reading PDF..."):
             try:
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 contents_to_send = []
                 extracted_digital_text = []
 
-                for page_num, page in enumerate(doc):
+                for page_num, page in enumerate(doc[:5]):
                     text = page.get_text().strip()
                     if text:
                         extracted_digital_text.append(f"--- Page {page_num + 1} ---\n{text}")
                     else:
-                        # Scanned/handwritten PDF page -> convert to image for Gemini Vision
-                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                        img_pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                        contents_to_send.append(img_pil)
+                        pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2), alpha=False)
+                        img_part = compress_image_to_jpeg_part(
+                            Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        )
+                        contents_to_send.append(img_part)
 
                 prompt = (
-                    "You are an expert study assistant. Analyze the provided PDF pages/text and create:\n"
-                    "1. ### 📌 Clean Unit-wise / Topic-wise Summary (well-structured bullet points, complete sentences)\n"
-                    "2. ### 💡 Key Exam Takeaways (most important concepts to remember)"
+                    "Analyze the provided PDF content and create:\n"
+                    "1. ### 📌 Clean Unit-wise / Topic-wise Summary (structured bullet points, complete sentences)\n"
+                    "2. ### 💡 Key Exam Takeaways (most important points)"
                 )
 
                 if extracted_digital_text:
-                    full_text = "\n\n".join(extracted_digital_text)
-                    contents_to_send.insert(0, full_text)
+                    contents_to_send.insert(0, "\n\n".join(extracted_digital_text))
 
                 contents_to_send.append(prompt)
 
-                response = client.models.generate_content(
-                    model="gemini-3.8-flash",
-                    contents=contents_to_send
-                )
+                response = generate_fast_response(contents_to_send)
+                elapsed = round(time.time() - start_time, 2)
                 result_text = response.text
                 st.session_state.study_context = result_text
+                st.success(f"⚡ Completed in {elapsed} seconds!")
                 st.markdown(result_text)
                 st.download_button("⬇️ Download PDF Summary (.txt)", data=result_text, file_name="ai_pdf_summary.txt")
             except Exception as e:
-                st.error(f"PDF AI Error: {e}")
+                elapsed = round(time.time() - start_time, 2)
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    st.warning(f"⚠️ Gemini servers are temporarily experiencing high traffic ({elapsed}s). Please click the button again in a few seconds.")
+                else:
+                    st.error(f"PDF AI Error ({elapsed}s): {e}")
 
 # ---------------------------------------------------------
-# BONUS: INTERACTIVE AI STUDY DOUBT SOLVER
+# INTERACTIVE AI STUDY DOUBT SOLVER
 # ---------------------------------------------------------
-
-# ---------------------------------------------------------
-# BONUS 1: INTERACTIVE AI STUDY DOUBT SOLVER
-# ---------------------------------------------------------
-
 if st.session_state.study_context:
-
     st.markdown("---")
-    st.subheader("💬 Ask AI About Your Notes")
-
-    user_q = st.text_input(
-        "Ask any question from your uploaded notes:",
-        placeholder="Example: Explain Unit 2 in simple language"
-    )
-
-    if st.button("🤖 Ask AI") and user_q.strip():
-
-        with st.spinner("AI is preparing your answer..."):
-
+    st.subheader("💬 Ask AI About These Notes")
+    user_q = st.text_input("Ask a question (e.g., 'Explain Unit 2 simply' or 'Create 5 viva questions from this'):")
+    if st.button("Ask AI") and user_q.strip():
+        start_time = time.time()
+        with st.spinner("Generating answer..."):
             try:
-                qa_prompt = f"""
-                Based on these study notes:
-
-                {st.session_state.study_context}
-
-                Answer the student's question:
-                {user_q}
-
-                Instructions:
-                1. Explain in simple language.
-                2. Give examples wherever required.
-                3. Use headings and bullet points.
-                4. Make the answer exam-friendly.
-                """
-
-                qa_response = client.models.generate_content(
-                    model="gemini-3.8-flash",
-                    contents=qa_prompt
-                )
-
-                st.markdown("### 📖 AI Answer")
+                qa_prompt = f"Based on these study notes:\n\n{st.session_state.study_context}\n\nAnswer clearly:\n{user_q}"
+                qa_response = generate_fast_response(qa_prompt)
+                elapsed = round(time.time() - start_time, 2)
+                st.caption(f"⚡ Answered in {elapsed}s")
                 st.markdown(qa_response.text)
-
             except Exception as e:
-                st.error(f"Error: {e}")
-
-
-# ---------------------------------------------------------
-# BONUS 2: YOUTUBE LEARNING RECOMMENDATIONS
-# ---------------------------------------------------------
-
-import urllib.parse
-
-if st.session_state.study_context:
-
-    st.markdown("---")
-    st.subheader("🎥 Learn More with YouTube")
-
-    st.write(
-        "Find educational videos related to your uploaded notes."
-    )
-
-    youtube_topic = st.text_input(
-        "Enter Topic for YouTube Videos:",
-        placeholder="Example: DBMS Normalization"
-    )
-
-    if st.button("🔍 Find YouTube Videos"):
-
-        if youtube_topic.strip():
-
-            search_query = urllib.parse.quote_plus(
-                youtube_topic + " tutorial for students"
-            )
-
-            youtube_url = (
-                "https://www.youtube.com/results?search_query="
-                + search_query
-            )
-
-            st.success("YouTube learning resources are ready!")
-
-            st.link_button(
-                "▶️ Watch YouTube Videos",
-                youtube_url
-            )
-
-        else:
-            st.warning("Please enter a topic first.")
+                elapsed = round(time.time() - start_time, 2)
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    st.warning(f"⚠️ Gemini servers are busy ({elapsed}s). Please try asking again in a moment.")
+                else:
+                    st.error(f"Error ({elapsed}s): {e}")
 
