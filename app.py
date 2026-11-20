@@ -8,20 +8,18 @@ import fitz  # PyMuPDF
 import io
 import time
 
-# Page Configuration
 st.set_page_config(page_title="AI Document Scanner & Study Assistant", layout="wide")
 
 st.title("📚 AI Document Scanner & Study Assistant")
 st.markdown("Scan handwritten notes, syllabus screenshots, or multi-page PDFs for fast text extraction, structured study summaries, and interactive Q&A.")
 
-# Initialize Gemini AI Client with short timeout so it never hangs for minutes
 @st.cache_resource
 def get_gemini_client():
     try:
         api_key = st.secrets["GEMINI_API_KEY"]
         return genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=25000)  # 25s max per request
+            http_options=types.HttpOptions(timeout=25000)
         )
     except Exception:
         return None
@@ -29,7 +27,7 @@ def get_gemini_client():
 client = get_gemini_client()
 
 if client is None:
-    st.error("⚠️ GEMINI_API_KEY missing! Please add your free Google AI Studio key in Streamlit Cloud Secrets.")
+    st.error("⚠️ GEMINI_API_KEY missing! Please add your key in Streamlit Cloud Secrets.")
     st.stop()
 
 FAST_CONFIG = types.GenerateContentConfig(
@@ -38,15 +36,40 @@ FAST_CONFIG = types.GenerateContentConfig(
     max_output_tokens=1400
 )
 
-MODEL_PRIORITY = [
-   
-   "gemini-3.8-flash",
-    "gemini-3.8-flash-lite",
+@st.cache_resource(show_spinner=False)
+def get_working_models(_client):
+    preferred_order = [
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.0-flash",
+        "gemini-2.5-flash",
+    ]
+    found = []
+    try:
+        for m in _client.models.list():
+            name = getattr(m, "name", "")
+            short_name = name.replace("models/", "")
+            if short_name and "embedding" not in short_name and "imagen" not in short_name and "veo" not in short_name:
+                found.append(short_name)
+    except Exception:
+        pass
 
-]
+    ordered = []
+    for p in preferred_order:
+        if p in found and p not in ordered:
+            ordered.append(p)
+    for f in found:
+        if ("flash" in f) and f not in ordered:
+            ordered.append(f)
+    for f in found:
+        if f not in ordered:
+            ordered.append(f)
+
+    return ordered if ordered else ["gemini-3.8-flash"]
 
 def compress_image_to_jpeg_part(pil_img, max_dim=800, quality=72):
-    """Resize and compress image to lightweight JPEG for fast upload."""
     w, h = pil_img.size
     if max(w, h) > max_dim:
         scale = max_dim / float(max(w, h))
@@ -58,9 +81,10 @@ def compress_image_to_jpeg_part(pil_img, max_dim=800, quality=72):
     return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
 def generate_fast_response(contents):
-    """Tries fast models quickly without long retry loops; raises clear status on overload."""
+    models_to_try = get_working_models(client)
     last_err = None
-    for model_name in MODEL_PRIORITY:
+
+    for model_name in models_to_try[:5]:
         try:
             return client.models.generate_content(
                 model=model_name,
@@ -70,15 +94,19 @@ def generate_fast_response(contents):
         except Exception as e:
             last_err = e
             err_str = str(e)
-            # If model not found, try next model immediately; if 503/429, try one fallback quickly
-            if "NOT_FOUND" in err_str or "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
-                time.sleep(0.5)
+            if "404" in err_str or "NOT_FOUND" in err_str:
+                continue
+            if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
+                time.sleep(0.4)
                 continue
             raise e
+
     raise last_err
 
-# Sidebar Controls
 st.sidebar.header("⚙️ Scanner Settings")
+
+with st.sidebar.expander("🔍 Available Models Check"):
+    st.write(get_working_models(client))
 
 input_source = st.sidebar.radio(
     "Select Input Source:",
@@ -98,13 +126,9 @@ bottom_crop = st.sidebar.slider("Bottom Edge Crop", 0, 40, 0)
 left_crop = st.sidebar.slider("Left Edge Crop", 0, 40, 0)
 right_crop = st.sidebar.slider("Right Edge Crop", 0, 40, 0)
 
-# Session state to store extracted content for Q&A
 if "study_context" not in st.session_state:
     st.session_state.study_context = ""
 
-# ---------------------------------------------------------
-# INPUT HANDLING
-# ---------------------------------------------------------
 cv_img = None
 pdf_bytes = None
 pdf_name = None
@@ -126,9 +150,6 @@ else:
             bytes_data = uploaded_file.getvalue()
             cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-# ---------------------------------------------------------
-# IMAGE PROCESSING & FAST AI EXTRACTION
-# ---------------------------------------------------------
 if cv_img is not None:
     height, width, _ = cv_img.shape
 
@@ -193,9 +214,6 @@ if cv_img is not None:
                 else:
                     st.error(f"AI Processing Error ({elapsed}s): {e}")
 
-# ---------------------------------------------------------
-# PDF PROCESSING & FAST AI EXTRACTION
-# ---------------------------------------------------------
 elif pdf_bytes is not None:
     st.markdown("---")
     if st.button("✨ Analyze PDF & Generate AI Study Summary"):
@@ -242,9 +260,6 @@ elif pdf_bytes is not None:
                 else:
                     st.error(f"PDF AI Error ({elapsed}s): {e}")
 
-# ---------------------------------------------------------
-# INTERACTIVE AI STUDY DOUBT SOLVER
-# ---------------------------------------------------------
 if st.session_state.study_context:
     st.markdown("---")
     st.subheader("💬 Ask AI About These Notes")
